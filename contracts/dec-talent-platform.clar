@@ -8,6 +8,9 @@
 (define-constant ERR_ALREADY_VOTED (err u403))
 (define-constant ERR_PROJECT_CLOSED (err u405))
 (define-constant ERR_INVALID_STATUS (err u406))
+(define-constant ERR_SKILL_EXISTS (err u407))
+(define-constant ERR_CANNOT_ENDORSE_SELF (err u408))
+(define-constant ERR_ALREADY_ENDORSED (err u409))
 
 (define-data-var next-project-id uint u1)
 (define-data-var platform-fee uint u500)
@@ -50,6 +53,16 @@
   { message: (string-ascii 200), status: (string-ascii 20), timestamp: uint }
 )
 
+(define-map artist-skills
+  { artist: principal, skill: (string-ascii 30) }
+  { endorsement-count: uint, verified: bool, registered-at: uint }
+)
+
+(define-map skill-endorsements
+  { artist: principal, skill: (string-ascii 30), endorser: principal }
+  { timestamp: uint, reputation-weight: uint }
+)
+
 (define-read-only (get-project (project-id uint))
   (map-get? projects project-id)
 )
@@ -64,6 +77,14 @@
 
 (define-read-only (get-collaboration-request (project-id uint) (requester principal))
   (map-get? collaboration-requests { project-id: project-id, requester: requester })
+)
+
+(define-read-only (get-artist-skill (artist principal) (skill (string-ascii 30)))
+  (map-get? artist-skills { artist: artist, skill: skill })
+)
+
+(define-read-only (get-skill-endorsement (artist principal) (skill (string-ascii 30)) (endorser principal))
+  (map-get? skill-endorsements { artist: artist, skill: skill, endorser: endorser })
 )
 
 (define-read-only (get-next-project-id)
@@ -279,6 +300,55 @@
   )
 )
 
+(define-public (register-skill (skill (string-ascii 30)))
+  (let
+    (
+      (existing-skill (get-artist-skill tx-sender skill))
+    )
+    (asserts! (is-none existing-skill) ERR_SKILL_EXISTS)
+    (map-set artist-skills { artist: tx-sender, skill: skill }
+      {
+        endorsement-count: u0,
+        verified: false,
+        registered-at: stacks-block-height
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (endorse-skill (artist principal) (skill (string-ascii 30)))
+  (let
+    (
+      (artist-skill (unwrap! (get-artist-skill artist skill) ERR_NOT_FOUND))
+      (existing-endorsement (get-skill-endorsement artist skill tx-sender))
+      (endorser-profile (get-artist-profile tx-sender))
+      (reputation-weight (match endorser-profile
+        profile (+ u1 (/ (get reputation-score profile) u10))
+        u1
+      ))
+    )
+    (asserts! (not (is-eq artist tx-sender)) ERR_CANNOT_ENDORSE_SELF)
+    (asserts! (is-none existing-endorsement) ERR_ALREADY_ENDORSED)
+    
+    (map-set skill-endorsements { artist: artist, skill: skill, endorser: tx-sender }
+      {
+        timestamp: stacks-block-height,
+        reputation-weight: reputation-weight
+      }
+    )
+    
+    (map-set artist-skills { artist: artist, skill: skill }
+      (merge artist-skill { 
+        endorsement-count: (+ (get endorsement-count artist-skill) u1),
+        verified: (>= (+ (get endorsement-count artist-skill) u1) u3)
+      })
+    )
+    
+    (ok true)
+  )
+)
+
 (define-public (update-platform-fee (new-fee uint))
   (begin
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
@@ -315,6 +385,21 @@
       avg-reputation: (if (> (get total-projects profile) u0)
         (/ (get reputation-score profile) (get total-projects profile))
         u0
+      )
+    })
+    ERR_NOT_FOUND
+  )
+)
+
+(define-read-only (get-skill-verification-status (artist principal) (skill (string-ascii 30)))
+  (match (get-artist-skill artist skill)
+    skill-data (ok {
+      endorsement-count: (get endorsement-count skill-data),
+      verified: (get verified skill-data),
+      registered-at: (get registered-at skill-data),
+      verification-percentage: (if (>= (get endorsement-count skill-data) u3)
+        u100
+        (/ (* (get endorsement-count skill-data) u100) u3)
       )
     })
     ERR_NOT_FOUND
