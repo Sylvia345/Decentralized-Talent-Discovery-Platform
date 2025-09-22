@@ -11,6 +11,10 @@
 (define-constant ERR_SKILL_EXISTS (err u407))
 (define-constant ERR_CANNOT_ENDORSE_SELF (err u408))
 (define-constant ERR_ALREADY_ENDORSED (err u409))
+(define-constant ERR_MILESTONE_NOT_FOUND (err u410))
+(define-constant ERR_MILESTONE_ALREADY_COMPLETED (err u411))
+(define-constant ERR_INSUFFICIENT_MILESTONE_VOTES (err u412))
+(define-constant ERR_ALL_MILESTONES_COMPLETED (err u413))
 
 (define-data-var next-project-id uint u1)
 (define-data-var platform-fee uint u500)
@@ -63,6 +67,24 @@
   { timestamp: uint, reputation-weight: uint }
 )
 
+(define-map project-milestones
+  { project-id: uint, milestone-id: uint }
+  {
+    title: (string-ascii 100),
+    description: (string-ascii 300),
+    funding-percentage: uint,
+    completed: bool,
+    completion-votes: uint,
+    required-votes: uint,
+    created-at: uint
+  }
+)
+
+(define-map milestone-votes
+  { project-id: uint, milestone-id: uint, voter: principal }
+  { timestamp: uint }
+)
+
 (define-read-only (get-project (project-id uint))
   (map-get? projects project-id)
 )
@@ -93,6 +115,14 @@
 
 (define-read-only (get-platform-fee)
   (var-get platform-fee)
+)
+
+(define-read-only (get-project-milestone (project-id uint) (milestone-id uint))
+  (map-get? project-milestones { project-id: project-id, milestone-id: milestone-id })
+)
+
+(define-read-only (get-milestone-vote (project-id uint) (milestone-id uint) (voter principal))
+  (map-get? milestone-votes { project-id: project-id, milestone-id: milestone-id, voter: voter })
 )
 
 (define-public (create-artist-profile (name (string-ascii 50)) (bio (string-ascii 300)) (portfolio-url (string-ascii 100)))
@@ -150,6 +180,49 @@
     )
     (ok project-id)
   )
+)
+
+(define-public (create-milestone 
+  (project-id uint)
+  (milestone-id uint)
+  (title (string-ascii 100))
+  (description (string-ascii 300))
+  (funding-percentage uint)
+)
+  (let
+    (
+      (project (unwrap! (get-project project-id) ERR_NOT_FOUND))
+      (existing-milestone (get-project-milestone project-id milestone-id))
+    )
+    (asserts! (is-eq (get artist project) tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (is-eq (get status project) "active") ERR_PROJECT_CLOSED)
+    (asserts! (is-none existing-milestone) ERR_SKILL_EXISTS)
+    (asserts! (and (> funding-percentage u0) (<= funding-percentage u100)) ERR_INVALID_AMOUNT)
+    
+    (let
+      (
+        (support-count u3)
+        (calculated-votes (/ support-count u2))
+        (required-votes (if (> calculated-votes u1) calculated-votes u1))
+      )
+      (map-set project-milestones { project-id: project-id, milestone-id: milestone-id }
+        {
+          title: title,
+          description: description,
+          funding-percentage: funding-percentage,
+          completed: false,
+          completion-votes: u0,
+          required-votes: required-votes,
+          created-at: stacks-block-height
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-private (get-supporter-count (unused principal))
+  u1
 )
 
 (define-public (support-project (project-id uint) (amount uint))
@@ -284,6 +357,78 @@
   )
 )
 
+(define-public (vote-milestone-completion (project-id uint) (milestone-id uint))
+  (let
+    (
+      (project (unwrap! (get-project project-id) ERR_NOT_FOUND))
+      (milestone (unwrap! (get-project-milestone project-id milestone-id) ERR_MILESTONE_NOT_FOUND))
+      (support (unwrap! (get-project-support project-id tx-sender) ERR_UNAUTHORIZED))
+      (existing-vote (get-milestone-vote project-id milestone-id tx-sender))
+    )
+    (asserts! (is-none existing-vote) ERR_ALREADY_VOTED)
+    (asserts! (not (get completed milestone)) ERR_MILESTONE_ALREADY_COMPLETED)
+    (asserts! (is-eq (get status project) "active") ERR_PROJECT_CLOSED)
+    
+    (map-set milestone-votes { project-id: project-id, milestone-id: milestone-id, voter: tx-sender }
+      { timestamp: stacks-block-height }
+    )
+    
+    (let
+      (
+        (new-votes (+ (get completion-votes milestone) u1))
+      )
+      (map-set project-milestones { project-id: project-id, milestone-id: milestone-id }
+        (merge milestone { completion-votes: new-votes })
+      )
+      
+      (if (>= new-votes (get required-votes milestone))
+        (begin
+          (map-set project-milestones { project-id: project-id, milestone-id: milestone-id }
+            (merge milestone { 
+              completion-votes: new-votes,
+              completed: true
+            })
+          )
+          (try! (release-milestone-funds project-id milestone-id))
+          (ok true)
+        )
+        (ok true)
+      )
+    )
+  )
+)
+
+(define-public (release-milestone-funds (project-id uint) (milestone-id uint))
+  (let
+    (
+      (project (unwrap! (get-project project-id) ERR_NOT_FOUND))
+      (milestone (unwrap! (get-project-milestone project-id milestone-id) ERR_MILESTONE_NOT_FOUND))
+    )
+    (asserts! (get completed milestone) ERR_INSUFFICIENT_MILESTONE_VOTES)
+    (asserts! (is-eq (get status project) "active") ERR_PROJECT_CLOSED)
+    
+    (let
+      (
+        (release-amount (/ (* (get current-funding project) (get funding-percentage milestone)) u100))
+      )
+      (try! (as-contract (stx-transfer? release-amount tx-sender (get artist project))))
+      
+      (map-set projects project-id
+        (merge project { current-funding: (- (get current-funding project) release-amount) })
+      )
+      
+      (match (get-artist-profile (get artist project))
+        profile (map-set artist-profiles (get artist project)
+          (merge profile { reputation-score: (+ (get reputation-score profile) u1) })
+        )
+        true
+      )
+      
+      (ok release-amount)
+    )
+  )
+)
+
 (define-public (close-project (project-id uint))
   (let
     (
@@ -372,6 +517,25 @@
       is-funded: (>= (get current-funding project) (get funding-goal project))
     })
     ERR_NOT_FOUND
+  )
+)
+
+(define-read-only (get-milestone-status (project-id uint) (milestone-id uint))
+  (match (get-project-milestone project-id milestone-id)
+    milestone (ok {
+      title: (get title milestone),
+      description: (get description milestone),
+      funding-percentage: (get funding-percentage milestone),
+      completed: (get completed milestone),
+      completion-votes: (get completion-votes milestone),
+      required-votes: (get required-votes milestone),
+      vote-percentage: (if (> (get required-votes milestone) u0)
+        (/ (* (get completion-votes milestone) u100) (get required-votes milestone))
+        u0
+      ),
+      created-at: (get created-at milestone)
+    })
+    ERR_MILESTONE_NOT_FOUND
   )
 )
 
