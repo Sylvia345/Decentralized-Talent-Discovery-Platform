@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Decentralized Talent Discovery Platform</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="header">
+        <nav class="nav">
+            <div class="nav-brand">
+                <h1>🎨 TalentChain</h1>
+            </div>
+            <div class="nav-links">
+                <button class="btn btn-secondary" id="connectWallet">Connect Wallet</button>
+                <span id="walletAddress" class="wallet-address"></span>
+            </div>
+        </nav>
+    </header>
+
+    <main class="main">
+        <section class="hero">
+            <div class="container">
+                <h2>Discover & Support Amazing Artists</h2>
+                <p>Fund creative projects, vote for your favorites, and collaborate with talented artists</p>
+                <button class="btn btn-primary" id="createProjectBtn">Create Project</button>
+            </div>
+        </section>
+
+        <section class="projects">
+            <div class="container">
+                <div class="section-header">
+                    <h3>Active Projects</h3>
+                    <div class="filters">
+                        <select id="statusFilter" class="filter-select">
+                            <option value="all">All Status</option>
+                            <option value="active">Active</option>
+                            <option value="completed">Completed</option>
+                            <option value="closed">Closed</option>
+                        </select>
+                        <input type="search" id="searchProjects" placeholder="Search projects..." class="search-input">
+                    </div>
+                </div>
+                <div class="projects-grid" id="projectsGrid">
+                </div>
+            </div>
+        </section>
+
+        <section class="artists">
+            <div class="container">
+                <h3>Featured Artists</h3>
+                <div class="artists-grid" id="artistsGrid">
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div class="modal" id="createProjectModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4>Create New Project</h4>
+                <button class="modal-close" id="closeModal">&times;</button>
+            </div>
+            <form id="createProjectForm" class="form">
+                <div class="form-group">
+                    <label for="projectTitle">Project Title</label>
+                    <input type="text" id="projectTitle" required maxlength="100">
+                </div>
+                <div class="form-group">
+                    <label for="projectDescription">Description</label>
+                    <textarea id="projectDescription" required maxlength="500" rows="4"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="fundingGoal">Funding Goal (STX)</label>
+                    <input type="number" id="fundingGoal" required min="1" step="0.000001">
+                </div>
+                <div class="form-group">
+                    <label for="projectDuration">Duration (blocks)</label>
+                    <input type="number" id="projectDuration" required min="144" value="1008">
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="collaborationOpen">
+                        Open for Collaboration
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" id="cancelProject">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create Project</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="projectModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 id="projectModalTitle">Project Details</h4>
+                <button class="modal-close" id="closeProjectModal">&times;</button>
+            </div>
+            <div id="projectModalContent">
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="artistModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4>Artist Profile</h4>
+                <button class="modal-close" id="closeArtistModal">&times;</button>
+            </div>
+            <form id="artistProfileForm" class="form">
+                <div class="form-group">
+                    <label for="artistName">Name</label>
+                    <input type="text" id="artistName" required maxlength="50">
+                </div>
+                <div class="form-group">
+                    <label for="artistBio">Bio</label>
+                    <textarea id="artistBio" required maxlength="300" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="portfolioUrl">Portfolio URL</label>
+                    <input type="url" id="portfolioUrl" maxlength="100">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" id="cancelArtist">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Profile</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <p>Processing transaction...</p>
+    </div>
+
+    <div class="toast" id="toast">
+        <span id="toastMessage"></span>
+        <button id="toastClose">&times;</button>
+    </div>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 TalentChain. Powered by Stacks Blockchain.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
