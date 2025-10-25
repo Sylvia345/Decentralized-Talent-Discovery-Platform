@@ -15,6 +15,10 @@
 (define-constant ERR_MILESTONE_ALREADY_COMPLETED (err u411))
 (define-constant ERR_INSUFFICIENT_MILESTONE_VOTES (err u412))
 (define-constant ERR_ALL_MILESTONES_COMPLETED (err u413))
+(define-constant ERR_DISPUTE_EXISTS (err u414))
+(define-constant ERR_DISPUTE_NOT_FOUND (err u415))
+(define-constant ERR_DISPUTE_CLOSED (err u416))
+(define-constant ERR_ALREADY_VOTED_DISPUTE (err u417))
 
 (define-data-var next-project-id uint u1)
 (define-data-var platform-fee uint u500)
@@ -85,6 +89,27 @@
   { timestamp: uint }
 )
 
+(define-map project-disputes
+  uint
+  {
+    project-id: uint,
+    initiator: principal,
+    reason: (string-ascii 300),
+    status: (string-ascii 20),
+    votes-for: uint,
+    votes-against: uint,
+    created-at: uint,
+    resolved-at: uint
+  }
+)
+
+(define-map dispute-votes
+  { project-id: uint, voter: principal }
+  { vote: bool, timestamp: uint }
+)
+
+(define-data-var next-dispute-id uint u1)
+
 (define-read-only (get-project (project-id uint))
   (map-get? projects project-id)
 )
@@ -123,6 +148,14 @@
 
 (define-read-only (get-milestone-vote (project-id uint) (milestone-id uint) (voter principal))
   (map-get? milestone-votes { project-id: project-id, milestone-id: milestone-id, voter: voter })
+)
+
+(define-read-only (get-dispute (dispute-id uint))
+  (map-get? project-disputes dispute-id)
+)
+
+(define-read-only (get-dispute-vote (project-id uint) (voter principal))
+  (map-get? dispute-votes { project-id: project-id, voter: voter })
 )
 
 (define-public (create-artist-profile (name (string-ascii 50)) (bio (string-ascii 300)) (portfolio-url (string-ascii 100)))
@@ -567,5 +600,131 @@
       )
     })
     ERR_NOT_FOUND
+  )
+)
+
+(define-public (raise-dispute (project-id uint) (reason (string-ascii 300)))
+  (let
+    (
+      (project (unwrap! (get-project project-id) ERR_NOT_FOUND))
+      (support (unwrap! (get-project-support project-id tx-sender) ERR_UNAUTHORIZED))
+      (dispute-id (var-get next-dispute-id))
+    )
+    (asserts! (is-eq (get status project) "active") ERR_PROJECT_CLOSED)
+    
+    (map-set project-disputes dispute-id
+      {
+        project-id: project-id,
+        initiator: tx-sender,
+        reason: reason,
+        status: "active",
+        votes-for: u1,
+        votes-against: u0,
+        created-at: stacks-block-height,
+        resolved-at: u0
+      }
+    )
+    
+    (map-set dispute-votes { project-id: project-id, voter: tx-sender }
+      { vote: true, timestamp: stacks-block-height }
+    )
+    
+    (var-set next-dispute-id (+ dispute-id u1))
+    (ok dispute-id)
+  )
+)
+
+(define-public (vote-on-dispute (dispute-id uint) (vote-for bool))
+  (let
+    (
+      (dispute (unwrap! (get-dispute dispute-id) ERR_DISPUTE_NOT_FOUND))
+      (project-id (get project-id dispute))
+      (support (unwrap! (get-project-support project-id tx-sender) ERR_UNAUTHORIZED))
+      (existing-vote (get-dispute-vote project-id tx-sender))
+    )
+    (asserts! (is-eq (get status dispute) "active") ERR_DISPUTE_CLOSED)
+    (asserts! (is-none existing-vote) ERR_ALREADY_VOTED_DISPUTE)
+    
+    (map-set dispute-votes { project-id: project-id, voter: tx-sender }
+      { vote: vote-for, timestamp: stacks-block-height }
+    )
+    
+    (let
+      (
+        (new-votes-for (if vote-for (+ (get votes-for dispute) u1) (get votes-for dispute)))
+        (new-votes-against (if vote-for (get votes-against dispute) (+ (get votes-against dispute) u1)))
+        (total-votes (+ new-votes-for new-votes-against))
+      )
+      (map-set project-disputes dispute-id
+        (merge dispute { 
+          votes-for: new-votes-for,
+          votes-against: new-votes-against
+        })
+      )
+      
+      (if (>= total-votes u5)
+        (resolve-dispute dispute-id)
+        (ok false)
+      )
+    )
+  )
+)
+
+(define-public (resolve-dispute (dispute-id uint))
+  (let
+    (
+      (dispute (unwrap! (get-dispute dispute-id) ERR_DISPUTE_NOT_FOUND))
+      (project-id (get project-id dispute))
+      (project (unwrap! (get-project project-id) ERR_NOT_FOUND))
+      (votes-for (get votes-for dispute))
+      (votes-against (get votes-against dispute))
+      (total-votes (+ votes-for votes-against))
+    )
+    (asserts! (is-eq (get status dispute) "active") ERR_DISPUTE_CLOSED)
+    (asserts! (>= total-votes u5) ERR_INSUFFICIENT_MILESTONE_VOTES)
+    
+    (let
+      (
+        (dispute-passed (> votes-for votes-against))
+        (refund-percentage (if dispute-passed u50 u0))
+      )
+      (map-set project-disputes dispute-id
+        (merge dispute { 
+          status: (if dispute-passed "upheld" "rejected"),
+          resolved-at: stacks-block-height
+        })
+      )
+      
+      (if dispute-passed
+        (begin
+          (map-set projects project-id
+            (merge project { status: "disputed" })
+          )
+          (ok true)
+        )
+        (ok false)
+      )
+    )
+  )
+)
+
+(define-read-only (get-dispute-status (dispute-id uint))
+  (match (get-dispute dispute-id)
+    dispute (ok {
+      project-id: (get project-id dispute),
+      initiator: (get initiator dispute),
+      reason: (get reason dispute),
+      status: (get status dispute),
+      votes-for: (get votes-for dispute),
+      votes-against: (get votes-against dispute),
+      total-votes: (+ (get votes-for dispute) (get votes-against dispute)),
+      vote-percentage-for: (if (> (+ (get votes-for dispute) (get votes-against dispute)) u0)
+        (/ (* (get votes-for dispute) u100) (+ (get votes-for dispute) (get votes-against dispute)))
+        u0
+      ),
+      created-at: (get created-at dispute),
+      resolved-at: (get resolved-at dispute)
+    })
+    ERR_DISPUTE_NOT_FOUND
   )
 )
