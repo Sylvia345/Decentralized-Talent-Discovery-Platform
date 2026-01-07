@@ -19,6 +19,9 @@
 (define-constant ERR_DISPUTE_NOT_FOUND (err u415))
 (define-constant ERR_DISPUTE_CLOSED (err u416))
 (define-constant ERR_ALREADY_VOTED_DISPUTE (err u417))
+(define-constant ERR_ALREADY_REFERRED (err u418))
+(define-constant ERR_CANNOT_REFER_SELF (err u419))
+(define-constant ERR_REFERRAL_NOT_FOUND (err u420))
 
 (define-data-var next-project-id uint u1)
 (define-data-var platform-fee uint u500)
@@ -109,6 +112,17 @@
 )
 
 (define-data-var next-dispute-id uint u1)
+(define-data-var referral-reward-points uint u10)
+
+(define-map talent-referrals
+  { referred: principal }
+  { referrer: principal, referred-at: uint, reward-claimed: bool }
+)
+
+(define-map referrer-stats
+  principal
+  { total-referrals: uint, successful-referrals: uint, total-reward-points: uint }
+)
 
 (define-read-only (get-project (project-id uint))
   (map-get? projects project-id)
@@ -156,6 +170,18 @@
 
 (define-read-only (get-dispute-vote (project-id uint) (voter principal))
   (map-get? dispute-votes { project-id: project-id, voter: voter })
+)
+
+(define-read-only (get-talent-referral (referred principal))
+  (map-get? talent-referrals { referred: referred })
+)
+
+(define-read-only (get-referrer-stats (referrer principal))
+  (map-get? referrer-stats referrer)
+)
+
+(define-read-only (get-referral-reward-points)
+  (var-get referral-reward-points)
 )
 
 (define-public (create-artist-profile (name (string-ascii 50)) (bio (string-ascii 300)) (portfolio-url (string-ascii 100)))
@@ -726,5 +752,99 @@
       resolved-at: (get resolved-at dispute)
     })
     ERR_DISPUTE_NOT_FOUND
+  )
+)
+
+(define-public (refer-talent (referred principal))
+  (let
+    (
+      (existing-referral (get-talent-referral referred))
+      (current-stats (get-referrer-stats tx-sender))
+    )
+    (asserts! (not (is-eq tx-sender referred)) ERR_CANNOT_REFER_SELF)
+    (asserts! (is-none existing-referral) ERR_ALREADY_REFERRED)
+    
+    (map-set talent-referrals { referred: referred }
+      { referrer: tx-sender, referred-at: stacks-block-height, reward-claimed: false }
+    )
+    
+    (match current-stats
+      stats (map-set referrer-stats tx-sender
+        (merge stats { total-referrals: (+ (get total-referrals stats) u1) })
+      )
+      (map-set referrer-stats tx-sender
+        { total-referrals: u1, successful-referrals: u0, total-reward-points: u0 }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-public (claim-referral-reward (referred principal))
+  (let
+    (
+      (referral (unwrap! (get-talent-referral referred) ERR_REFERRAL_NOT_FOUND))
+      (referred-profile (unwrap! (get-artist-profile referred) ERR_NOT_FOUND))
+      (referrer (get referrer referral))
+      (referrer-profile (get-artist-profile referrer))
+      (reward-points (var-get referral-reward-points))
+    )
+    (asserts! (is-eq tx-sender referrer) ERR_UNAUTHORIZED)
+    (asserts! (not (get reward-claimed referral)) ERR_ALREADY_REFERRED)
+    (asserts! (> (get successful-projects referred-profile) u0) ERR_INVALID_STATUS)
+    
+    (map-set talent-referrals { referred: referred }
+      (merge referral { reward-claimed: true })
+    )
+    
+    (match referrer-profile
+      profile (begin
+        (map-set artist-profiles referrer
+          (merge profile { reputation-score: (+ (get reputation-score profile) reward-points) })
+        )
+        (map-set referrer-stats referrer
+          {
+            total-referrals: (match (get-referrer-stats referrer)
+              stats (get total-referrals stats)
+              u1
+            ),
+            successful-referrals: (+ (match (get-referrer-stats referrer)
+              stats (get successful-referrals stats)
+              u0
+            ) u1),
+            total-reward-points: (+ (match (get-referrer-stats referrer)
+              stats (get total-reward-points stats)
+              u0
+            ) reward-points)
+          }
+        )
+        (ok true)
+      )
+      ERR_NOT_FOUND
+    )
+  )
+)
+
+(define-public (update-referral-reward-points (new-points uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (and (> new-points u0) (<= new-points u100)) ERR_INVALID_AMOUNT)
+    (var-set referral-reward-points new-points)
+    (ok true)
+  )
+)
+
+(define-read-only (get-referral-status (referred principal))
+  (match (get-talent-referral referred)
+    referral (ok {
+      referrer: (get referrer referral),
+      referred-at: (get referred-at referral),
+      reward-claimed: (get reward-claimed referral),
+      eligible-for-reward: (match (get-artist-profile referred)
+        profile (> (get successful-projects profile) u0)
+        false
+      )
+    })
+    ERR_REFERRAL_NOT_FOUND
   )
 )
